@@ -194,8 +194,8 @@ async function run() {
     clearCache()
     const pc = prepare(cjk, FONT, LINE_HEIGHT)
     const pl = prepare(lat, FONT, LINE_HEIGHT)
-    const cSegs = pc.paraData[0]?.widths.length ?? 0
-    const lSegs = pl.paraData[0]?.widths.length ?? 0
+    const cSegs = pc.widths.length
+    const lSegs = pl.widths.length
     const lTimes = { cjk: [] as number[], lat: [] as number[] }
     for (let r = 0; r < 15; r++) {
       let t0 = performance.now(); for (let j = 0; j < 1000; j++) layout(pc, WIDTH_AFTER); lTimes.cjk.push((performance.now() - t0) / 1000)

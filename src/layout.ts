@@ -110,9 +110,9 @@ function getEmojiCorrection(font: string, fontSize: number): number {
   return correction
 }
 
-function countEmojiGraphemes(text: string, segmenter: Intl.Segmenter): number {
+function countEmojiGraphemes(text: string): number {
   let count = 0
-  for (const g of segmenter.segment(text)) {
+  for (const g of sharedGraphemeSegmenter.segment(text)) {
     if (isEmojiGrapheme(g.segment)) count++
   }
   return count
@@ -137,6 +137,16 @@ function isCJK(s: string): boolean {
     }
   }
   return false
+}
+
+function isWhitespace(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x0D && c !== 0x0C && c !== 0xA0) {
+      return false
+    }
+  }
+  return true
 }
 
 // Kinsoku shori (禁則処理): CJK line-breaking rules.
@@ -259,6 +269,7 @@ function computeBidiLevels(str: string): Int8Array | null {
   const len = str.length
   if (len === 0) return null
 
+  // eslint-disable-next-line unicorn/no-new-array
   const types: BidiType[] = new Array(len)
   let numBidi = 0
 
@@ -318,49 +329,13 @@ function computeBidiLevels(str: string): Int8Array | null {
   return levels
 }
 
-// L2 rule: reorder segments within a completed line for visual display.
-// Reverses contiguous sequences of RTL segments at each embedding level.
-// Returns reordered index array, or null if the line is pure LTR.
-function reorderLine(segLevels: Int8Array, start: number, end: number): number[] | null {
-  let low = 127, high = 0
-  for (let i = start; i < end; i++) {
-    const lv = segLevels[i]!
-    if (lv < low) low = lv
-    if (lv > high) high = lv
-  }
-  if (high <= 0) return null
-  if (low % 2 === 0) low++
-
-  const indices = new Array<number>(end - start)
-  for (let i = 0; i < indices.length; i++) indices[i] = start + i
-
-  while (high >= low) {
-    let i = 0
-    while (i < indices.length) {
-      while (i < indices.length && segLevels[indices[i]!]! < high) i++
-      let j = i
-      while (j < indices.length && segLevels[indices[j]!]! >= high) j++
-      let a = i, b = j - 1
-      while (a < b) { const tmp = indices[a]!; indices[a] = indices[b]!; indices[b] = tmp; a++; b-- }
-      i = j
-    }
-    high--
-  }
-  return indices
-}
-
 // --- Public types ---
 
-type ParaData = {
+export type PreparedText = {
   widths: number[]
-  isWordLike: boolean[]
   isSpace: boolean[]
   segLevels: Int8Array | null
   breakableWidths: (number[] | null)[]
-}
-
-export type PreparedText = {
-  paraData: ParaData[]
   lineHeight: number
 }
 
@@ -394,118 +369,123 @@ export function prepare(text: string, font: string, lineHeight?: number): Prepar
     lineHeight = Math.round(fontSize * 1.2)
   }
 
-  // Auto-detect emoji canvas inflation. Chrome/Firefox canvas measures emoji wider
-  // than DOM at small sizes. Safari canvas and DOM agree (both wider than fontSize).
-  // Compare canvas vs actual DOM width — not fontSize — to detect the discrepancy.
-  // Cached per font string since the correction is a browser+font property.
   const emojiCorrection = getEmojiCorrection(font, fontSize)
 
-  // CSS white-space: normal collapses newlines to spaces. For pre-wrap behavior,
-  // callers should split on \n and prepare each paragraph separately.
+  // CSS white-space: normal collapses newlines to spaces.
   const normalized = text.replace(/\n/g, ' ')
 
   if (normalized.length === 0 || normalized.trim().length === 0) {
-    return { paraData: [], lineHeight }
+    return { widths: [], isSpace: [], segLevels: null, breakableWidths: [], lineHeight }
   }
 
-  const segments = sharedWordSegmenter.segment(normalized)
+  // Output arrays — segments get pushed here after merging/splitting.
   const widths: number[] = []
-  const isWordLike: boolean[] = []
   const isSpace: boolean[] = []
   const segStarts: number[] = []
   const breakableWidths: (number[] | null)[] = []
 
-  // Merge punctuation into preceding word-like segments. Without this,
-  // measureText("better") + measureText(".") can differ from measureText("better.")
-  // by enough to cause off-by-one line breaks at borderline widths (up to 2.6px
-  // accumulation error at 28px font). Merging also matches CSS behavior where
-  // punctuation is visually attached to its word and not broken separately.
-  // Only merge into word-like segments — merging into spaces would make
-  // content (emoji, parens) invisible to line-breaking.
-  const rawSegs = [...segments]
-  const merged: { text: string, isWordLike: boolean, isSpace: boolean, start: number }[] = []
+  // Phase 1: merge punctuation into preceding word-like segments.
+  // Iterate the segmenter directly — no intermediate array allocation.
+  // Parallel arrays instead of object allocations.
+  let mergedLen = 0
+  const mergedTexts: string[] = []
+  const mergedWordLike: boolean[] = []
+  const mergedSpace: boolean[] = []
+  const mergedStarts: number[] = []
 
-  for (let i = 0; i < rawSegs.length; i++) {
-    const s = rawSegs[i]!
-    const ws = !s.isWordLike && /^\s+$/.test(s.segment)
+  for (const s of sharedWordSegmenter.segment(normalized)) {
+    const ws = !s.isWordLike && isWhitespace(s.segment)
 
-    if (!s.isWordLike && !ws && merged.length > 0 && merged[merged.length - 1]!.isWordLike) {
-      merged[merged.length - 1]!.text += s.segment
+    if (!s.isWordLike && !ws && mergedLen > 0 && mergedWordLike[mergedLen - 1]!) {
+      mergedTexts[mergedLen - 1] += s.segment
     } else {
-      merged.push({ text: s.segment, isWordLike: s.isWordLike ?? false, isSpace: ws, start: s.index })
+      mergedTexts[mergedLen] = s.segment
+      mergedWordLike[mergedLen] = s.isWordLike ?? false
+      mergedSpace[mergedLen] = ws
+      mergedStarts[mergedLen] = s.index
+      mergedLen++
     }
   }
 
   // Forward-merge opening brackets with the following segment (UAX #14: opening
   // punctuation can't end a line). E.g. "(" + "approximately" → "(approximately".
-  for (let i = merged.length - 2; i >= 0; i--) {
-    const seg = merged[i]!
-    if (!seg.isSpace && !seg.isWordLike && seg.text.length === 1 && kinsokuEnd.has(seg.text)) {
-      merged[i + 1]!.text = seg.text + merged[i + 1]!.text
-      merged[i + 1]!.start = seg.start
-      merged.splice(i, 1)
+  // Mark deleted entries with empty string instead of shifting (O(1) vs O(n)).
+  for (let i = mergedLen - 2; i >= 0; i--) {
+    if (!mergedSpace[i]! && !mergedWordLike[i]! && mergedTexts[i]!.length === 1 && kinsokuEnd.has(mergedTexts[i]!)) {
+      mergedTexts[i + 1] = mergedTexts[i]! + mergedTexts[i + 1]!
+      mergedStarts[i + 1] = mergedStarts[i]!
+      mergedTexts[i] = '' // mark deleted
     }
   }
 
-  for (let mi = 0; mi < merged.length; mi++) {
-    const seg = merged[mi]!
-    if (isCJK(seg.text)) {
-      // Split CJK segments into individual graphemes for per-character line breaks.
-      // but apply kinsoku shori: merge line-start prohibited chars (，。etc.)
-      // with the preceding grapheme, and line-end prohibited chars (（「etc.)
-      // with the following grapheme. This prevents them from being separated.
-      const graphemes = [...sharedGraphemeSegmenter.segment(seg.text)]
-      const units: { text: string, start: number }[] = []
-      for (let gi = 0; gi < graphemes.length; gi++) {
-        const g = graphemes[gi]!.segment
-        if (kinsokuStart.has(g) && units.length > 0) {
-          // Merge with preceding unit (can't start a line)
-          units[units.length - 1]!.text += g
-        } else if (kinsokuEnd.has(g) && gi + 1 < graphemes.length) {
-          // Merge with following grapheme (can't end a line)
-          units.push({ text: g + graphemes[gi + 1]!.segment, start: graphemes[gi]!.index })
-          gi++ // skip the next grapheme, already consumed
-        } else {
-          units.push({ text: g, start: graphemes[gi]!.index })
-        }
+  // Phase 2: expand CJK into graphemes, measure everything.
+  for (let mi = 0; mi < mergedLen; mi++) {
+    const segText = mergedTexts[mi]!
+    if (segText.length === 0) continue // skip deleted entries
+
+    const segWordLike = mergedWordLike[mi]!
+    const segIsSpace = mergedSpace[mi]!
+    const segStart = mergedStarts[mi]!
+
+    if (isCJK(segText)) {
+      // Split CJK into individual graphemes for per-character line breaks.
+      // Apply kinsoku shori in a single pass: collect graphemes into a temporary
+      // array (needed for lookahead on kinsokuEnd), then merge and push to output.
+      let gLen = 0
+      const gTexts: string[] = []
+      const gStarts: number[] = []
+      for (const gs of sharedGraphemeSegmenter.segment(segText)) {
+        gTexts[gLen] = gs.segment
+        gStarts[gLen] = gs.index
+        gLen++
       }
-      for (let ui = 0; ui < units.length; ui++) {
-        const u = units[ui]!
-        let w = measureSegment(u.text, cache)
-        if (emojiCorrection > 0 && isEmojiGrapheme(u.text)) {
+
+      // Kinsoku merge + push to output in one pass
+      for (let gi = 0; gi < gLen; gi++) {
+        let unitText = gTexts[gi]!
+        const unitStart = gStarts[gi]!
+
+        if (kinsokuEnd.has(unitText) && gi + 1 < gLen) {
+          unitText += gTexts[gi + 1]!
+          gi++
+        }
+        // Check if the NEXT grapheme is a kinsoku-start char — absorb it
+        while (gi + 1 < gLen && kinsokuStart.has(gTexts[gi + 1]!)) {
+          unitText += gTexts[gi + 1]!
+          gi++
+        }
+
+        let w = measureSegment(unitText, cache)
+        if (emojiCorrection > 0 && isEmojiGrapheme(unitText)) {
           w -= emojiCorrection
         }
         widths.push(w)
-        isWordLike.push(true)
         isSpace.push(false)
-        segStarts.push(seg.start + u.start)
+        segStarts.push(segStart + unitStart)
         breakableWidths.push(null)
       }
     } else {
-      let w = measureSegment(seg.text, cache)
-      if (emojiCorrection > 0 && emojiPresentationRe.test(seg.text)) {
-        const ec = countEmojiGraphemes(seg.text, sharedGraphemeSegmenter)
-        w -= ec * emojiCorrection
+      let w = measureSegment(segText, cache)
+      if (emojiCorrection > 0 && emojiPresentationRe.test(segText)) {
+        w -= countEmojiGraphemes(segText) * emojiCorrection
       }
       widths.push(w)
-      isWordLike.push(seg.isWordLike)
-      isSpace.push(seg.isSpace)
-      segStarts.push(seg.start)
-      if (seg.isWordLike && seg.text.length > 1) {
-        const graphemes = [...sharedGraphemeSegmenter.segment(seg.text)]
-        if (graphemes.length > 1) {
-          const gWidths = new Array<number>(graphemes.length)
-          for (let gi = 0; gi < graphemes.length; gi++) {
-            let gw = measureSegment(graphemes[gi]!.segment, cache)
-            if (emojiCorrection > 0 && isEmojiGrapheme(graphemes[gi]!.segment)) {
-              gw -= emojiCorrection
-            }
-            gWidths[gi] = gw
+      isSpace.push(segIsSpace)
+      segStarts.push(segStart)
+      if (segWordLike && segText.length > 1) {
+        // Pre-measure graphemes for overflow-wrap: break-word.
+        let gCount = 0
+        let gWidths: number[] | null = null
+        for (const gs of sharedGraphemeSegmenter.segment(segText)) {
+          if (gCount === 0) gWidths = []
+          let gw = measureSegment(gs.segment, cache)
+          if (emojiCorrection > 0 && isEmojiGrapheme(gs.segment)) {
+            gw -= emojiCorrection
           }
-          breakableWidths.push(gWidths)
-        } else {
-          breakableWidths.push(null)
+          gWidths![gCount] = gw
+          gCount++
         }
+        breakableWidths.push(gCount > 1 ? gWidths : null)
       } else {
         breakableWidths.push(null)
       }
@@ -522,7 +502,7 @@ export function prepare(text: string, font: string, lineHeight?: number): Prepar
     }
   }
 
-  return { paraData: [{ widths, isWordLike, isSpace, segLevels, breakableWidths }], lineHeight }
+  return { widths, isSpace, segLevels, breakableWidths, lineHeight }
 }
 
 // Layout prepared text at a given max width. Pure arithmetic on cached widths —
@@ -530,100 +510,74 @@ export function prepare(text: string, font: string, lineHeight?: number): Prepar
 // ~0.0002ms per text block. Call on every resize.
 //
 // Line breaking rules (matching CSS white-space: normal + overflow-wrap: break-word):
-//   - Break before word-like segments that would overflow the line
+//   - Break before any non-space segment that would overflow the line
 //   - Trailing whitespace hangs past the line edge (doesn't trigger breaks)
-//   - Non-whitespace punctuation overflows trigger break before the last word
 //   - Segments wider than maxWidth are broken at grapheme boundaries
-//   - Bidi reordering applied per completed line
 export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: number): LayoutResult {
-  const { paraData } = prepared
   if (lineHeight === undefined) lineHeight = prepared.lineHeight
 
+  const { widths, isSpace: isSp, breakableWidths } = prepared
+  if (widths.length === 0) return { lineCount: 0, height: 0 }
+
   let lineCount = 0
+  let lineW = 0
+  let hasContent = false
 
-  for (let p = 0; p < paraData.length; p++) {
-    const data = paraData[p]!
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i]!
 
-    const { widths, isSpace: isSp, segLevels, breakableWidths } = data
-    let lineW = 0
-    let hasContent = false
-    let lineStart = 0
-
-    for (let i = 0; i < widths.length; i++) {
-      const w = widths[i]!
-
-      if (!hasContent) {
-        if (w > maxWidth && breakableWidths[i] !== null) {
-          const gWidths = breakableWidths[i]!
-          lineW = 0
-          for (let g = 0; g < gWidths.length; g++) {
-            if (lineW > 0 && lineW + gWidths[g]! > maxWidth) {
-              lineCount++
-              lineW = gWidths[g]!
-            } else {
-              if (lineW === 0) lineCount++
-              lineW += gWidths[g]!
-            }
-          }
-          hasContent = true
-          lineStart = i
-        } else {
-          lineW = w
-          hasContent = true
-          lineCount++
-          lineStart = i
-        }
-        continue
-      }
-
-      const newW = lineW + w
-
-      if (newW > maxWidth) {
-        if (isSp[i]) {
-          // Trailing whitespace hangs past the line edge (CSS behavior)
-          continue
-        }
-
-        // Non-space segment overflows. Break before it (words, emoji, punct).
-        const breakIdx = i
-
-        if (segLevels !== null) {
-          reorderLine(segLevels, lineStart, breakIdx)
-        }
-
-        lineStart = breakIdx
-        lineCount++
+    if (!hasContent) {
+      if (w > maxWidth && breakableWidths[i] !== null) {
+        const gWidths = breakableWidths[i]!
         lineW = 0
-        for (let j = breakIdx; j <= i; j++) {
-          lineW += widths[j]!
-        }
-
-        if (w > maxWidth && breakableWidths[i] !== null) {
-          const gWidths = breakableWidths[i]!
-          lineW = 0
-          lineCount--
-          for (let g = 0; g < gWidths.length; g++) {
-            if (lineW > 0 && lineW + gWidths[g]! > maxWidth) {
-              lineCount++
-              lineW = gWidths[g]!
-            } else {
-              if (lineW === 0) lineCount++
-              lineW += gWidths[g]!
-            }
+        for (let g = 0; g < gWidths.length; g++) {
+          const gw = gWidths[g]!
+          if (lineW > 0 && lineW + gw > maxWidth) {
+            lineCount++
+            lineW = gw
+          } else {
+            if (lineW === 0) lineCount++
+            lineW += gw
           }
         }
       } else {
-        lineW = newW
+        lineW = w
+        lineCount++
       }
+      hasContent = true
+      continue
     }
 
-    if (hasContent && segLevels !== null) {
-      reorderLine(segLevels, lineStart, widths.length)
-    }
+    const newW = lineW + w
 
-    if (!hasContent) {
-      lineCount++
+    if (newW > maxWidth) {
+      if (isSp[i]) continue // trailing whitespace hangs (CSS behavior)
+
+      if (w > maxWidth && breakableWidths[i] !== null) {
+        // Segment wider than line — break at grapheme boundaries
+        const gWidths = breakableWidths[i]!
+        lineW = 0
+        for (let g = 0; g < gWidths.length; g++) {
+          const gw = gWidths[g]!
+          if (lineW > 0 && lineW + gw > maxWidth) {
+            lineCount++
+            lineW = gw
+          } else {
+            if (lineW === 0) lineCount++
+            lineW += gw
+          }
+        }
+      } else {
+        lineCount++
+        lineW = w
+      }
+    } else {
+      lineW = newW
     }
+  }
+
+  if (!hasContent) {
+    lineCount++
   }
 
   return { lineCount, height: lineCount * lineHeight }
