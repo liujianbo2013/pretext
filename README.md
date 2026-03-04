@@ -40,11 +40,11 @@ Tested across 2 fonts × 8 sizes × 8 widths × 30 i18n texts (3840 tests):
 
 | Browser | Match rate | Remaining mismatches |
 |---|---|---|
-| Chrome | 99.7% | CJK kinsoku at narrow widths, measurement edge cases |
+| Chrome | 99.9% | 2 Georgia rounding edge cases, 1 bidi boundary break |
 | Safari | 98.8% | CSS line-breaking rule differences (emoji breaks, CJK kinsoku, bidi) |
 | Headless (HarfBuzz) | 100% | Algorithm is exact |
 
-Chrome's remaining mismatches are CJK line-breaking rule differences (kinsoku) and a few measurement edge cases at narrow widths. Safari's mismatches are CSS line-breaking behavior differences (not measurement errors). See [RESEARCH.md](RESEARCH.md) for details.
+Chrome's remaining 3 mismatches are Georgia font measurement rounding at borderline widths and one bidi boundary break preference. Safari's mismatches are CSS line-breaking behavior differences (not measurement errors). See [RESEARCH.md](RESEARCH.md) for details.
 
 ## i18n
 
@@ -55,7 +55,7 @@ Chrome's remaining mismatches are CJK line-breaking rule differences (kinsoku) a
 
 ## Known limitations
 
-- **CJK kinsoku**: Chrome's CSS engine prohibits certain CJK punctuation from starting/ending lines. Our algorithm doesn't implement these rules, causing a few mismatches at narrow widths.
+- **Bidi boundary breaks**: browsers may break at script boundaries (LTR→RTL transitions) differently from our algorithm.
 - **`system-ui` font**: canvas and DOM resolve this CSS keyword to different font variants at certain sizes on macOS. Use a named font (Inter, Helvetica, Arial, etc.) for guaranteed accuracy.
 - **Server-side**: requires a canvas implementation (browser, or `@napi-rs/canvas` with registered fonts). Headless tests use HarfBuzz (WASM) instead.
 
@@ -63,7 +63,7 @@ Chrome's remaining mismatches are CJK line-breaking rule differences (kinsoku) a
 
 1. **Segmentation**: `Intl.Segmenter('word')` splits text into words and non-words (spaces, punctuation).
 2. **Punctuation merging**: `"better."` is measured as one unit, not `"better"` + `"."`. This reduces accumulation error from summing individual measurements (up to 2.6px at 28px font without merging).
-3. **CJK splitting**: CJK word segments are re-split into individual graphemes, since CSS allows line breaks between any CJK characters.
+3. **CJK splitting + kinsoku**: CJK word segments are re-split into individual graphemes, since CSS allows line breaks between any CJK characters. Kinsoku shori rules keep CJK punctuation (，。「」 etc.) attached to their adjacent characters so they can't be separated across line breaks.
 4. **Measurement**: each segment is measured via canvas `measureText()` and cached per (segment, font). Common words across texts share cache entries.
 5. **Emoji correction**: canvas `measureText` inflates emoji widths on Chrome/Firefox at font sizes <24px on macOS. Auto-detected by measuring a reference emoji; correction subtracted per emoji grapheme. Constant across all emoji types and font families. Safari is unaffected (correction = 0).
 6. **Bidi classification**: characters are classified into bidi types, embedding levels are computed. Pure LTR text skips this entirely.

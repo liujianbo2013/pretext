@@ -102,6 +102,54 @@ function isCJK(s: string): boolean {
   return false
 }
 
+// Kinsoku shori (禁則処理): CJK line-breaking rules.
+// Line-start prohibition: these characters cannot start a new line.
+// To prevent this, they are merged with the preceding grapheme during
+// CJK splitting, keeping them together as one unit.
+const kinsokuStart = new Set([
+  // Fullwidth punctuation
+  '\uFF0C', // ，
+  '\uFF0E', // ．
+  '\uFF01', // ！
+  '\uFF1A', // ：
+  '\uFF1B', // ；
+  '\uFF1F', // ？
+  // CJK punctuation
+  '\u3001', // 、
+  '\u3002', // 。
+  '\u30FB', // ・
+  // Closing brackets
+  '\uFF09', // ）
+  '\u3015', // 〕
+  '\u3009', // 〉
+  '\u300B', // 》
+  '\u300D', // 」
+  '\u300F', // 』
+  '\u3011', // 】
+  '\u3017', // 〗
+  '\u3019', // 〙
+  '\u301B', // 〛
+  // Prolonged sound mark, iteration marks
+  '\u30FC', // ー
+  '\u3005', // 々
+  '\u303B', // 〻
+])
+
+// Line-end prohibition: these characters cannot end a line.
+// To prevent this, they are merged with the following grapheme.
+const kinsokuEnd = new Set([
+  '\uFF08', // （
+  '\u3014', // 〔
+  '\u3008', // 〈
+  '\u300A', // 《
+  '\u300C', // 「
+  '\u300E', // 『
+  '\u3010', // 【
+  '\u3016', // 〖
+  '\u3018', // 〘
+  '\u301A', // 〚
+])
+
 // Unicode Bidirectional Algorithm (UAX #9), forked from pdf.js via Sebastian's
 // text-layout. Classifies characters into bidi types, computes embedding levels,
 // and reorders segments within each line for correct visual display of mixed
@@ -350,16 +398,34 @@ export function prepare(text: string, font: string, lineHeight?: number): Prepar
 
   for (const seg of merged) {
     if (seg.isWordLike && isCJK(seg.text)) {
-      const graphemes = graphemeSegmenter.segment(seg.text)
-      for (const g of graphemes) {
-        let w = measureSegment(g.segment, cache)
-        if (emojiCorrection > 0 && isEmojiGrapheme(g.segment)) {
+      // Split CJK words into individual graphemes for per-character line breaks,
+      // but apply kinsoku shori: merge line-start prohibited chars (，。etc.)
+      // with the preceding grapheme, and line-end prohibited chars (（「etc.)
+      // with the following grapheme. This prevents them from being separated.
+      const graphemes = [...graphemeSegmenter.segment(seg.text)]
+      const units: { text: string, start: number }[] = []
+      for (let gi = 0; gi < graphemes.length; gi++) {
+        const g = graphemes[gi]!.segment
+        if (kinsokuStart.has(g) && units.length > 0) {
+          // Merge with preceding unit (can't start a line)
+          units[units.length - 1]!.text += g
+        } else if (kinsokuEnd.has(g) && gi + 1 < graphemes.length) {
+          // Merge with following grapheme (can't end a line)
+          units.push({ text: g + graphemes[gi + 1]!.segment, start: graphemes[gi]!.index })
+          gi++ // skip the next grapheme, already consumed
+        } else {
+          units.push({ text: g, start: graphemes[gi]!.index })
+        }
+      }
+      for (const u of units) {
+        let w = measureSegment(u.text, cache)
+        if (emojiCorrection > 0 && isEmojiGrapheme(u.text)) {
           w -= emojiCorrection
         }
         widths.push(w)
         isWordLike.push(true)
         isSpace.push(false)
-        segStarts.push(seg.start + g.index)
+        segStarts.push(seg.start + u.start)
         breakableWidths.push(null)
       }
     } else {

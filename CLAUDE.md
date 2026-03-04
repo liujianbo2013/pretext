@@ -28,11 +28,12 @@ DOM-free text measurement using canvas `measureText()` + `Intl.Segmenter`. Two-p
 - Trailing whitespace hangs past line edge (CSS behavior): spaces that overflow don't trigger breaks.
 - Emoji correction: auto-detected per font size. Canvas inflates emoji widths on Chrome/Firefox at <24px; correction is constant per emoji grapheme, font-independent. Safari is unaffected (correction=0).
 - Non-word, non-space segments (emoji, parens) are break points: CSS breaks at the preceding space, so these overflow like words, not like trailing whitespace.
+- Kinsoku shori (禁則処理): CJK punctuation (，。「」etc.) merged with adjacent graphemes during CJK splitting so they can't be separated across line breaks.
 - HarfBuzz with explicit LTR for headless tests: guessSegmentProperties assigns wrong direction to isolated Arabic words.
 
 ### Accuracy
 
-- Chrome: 99.7% (3829/3840). Remaining: CJK kinsoku at narrow widths, one Latin measurement edge case, one bidi boundary break.
+- Chrome: 99.9% (3837/3840). Remaining: 2 Georgia measurement rounding edge cases, 1 bidi boundary break.
 - Safari: 98.8% (3792/3840). Remaining: CSS line-breaking rule differences — emoji break opportunities, CJK kinsoku, bidi boundary breaks. NOT measurement errors.
 - Firefox: similar emoji issue to Chrome but auto-corrected (+5px at 15px, converges at 28px).
 - Headless (HarfBuzz): 100% (1472/1472). Algorithm is exact.
@@ -40,8 +41,7 @@ DOM-free text measurement using canvas `measureText()` + `Intl.Segmenter`. Two-p
 ### Known limitations
 
 - system-ui font: canvas and DOM resolve to different optical variants on macOS. Use named fonts.
-- CJK kinsoku: Chrome's CSS engine prohibits certain CJK punctuation from starting/ending lines. Our algorithm doesn't implement these rules.
-- Safari CSS rules: kinsoku, emoji-as-break-point, bidi boundary breaks differ from our algorithm. Would need CSS line-breaking spec implementation to fix.
+- Safari CSS rules: emoji-as-break-point, bidi boundary breaks differ from our algorithm. Kinsoku is now implemented.
 - Server-side: needs canvas or @napi-rs/canvas with registered fonts. HarfBuzz works for testing.
 
 ### Related

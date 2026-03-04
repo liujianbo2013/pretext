@@ -218,9 +218,10 @@ Safari's CSS engine may treat bidi script boundaries as preferred break points. 
 ## Accuracy summary
 
 Browser (canvas measureText, named font):
-- Chrome: 3829/3840 (99.7%) across 2 fonts × 8 sizes × 8 widths × 30 texts
-  - Remaining 11 mismatches: CJK kinsoku at narrow widths, one Latin measurement edge case, one bidi boundary break
+- Chrome: 3837/3840 (99.9%) across 2 fonts × 8 sizes × 8 widths × 30 texts
+  - Remaining 3 mismatches: 2 Georgia measurement rounding at borderline widths, 1 bidi boundary break
   - Emoji correction eliminated all 24 previous emoji mismatches
+  - Kinsoku shori eliminated all 8 CJK line-breaking mismatches
 - Safari: 3792/3840 (98.8%)
   - Remaining 48 mismatches: emoji breaks, CJK kinsoku, bidi boundaries (CSS rule differences)
 - Firefox: untested at scale but has same emoji inflation as Chrome (worse: +5px at 15px vs Chrome's +4px, converges at 28px vs Chrome's 24px). Auto-correction should handle it.
