@@ -1,4 +1,4 @@
-English|[中文简体](README.md)
+English|[中文简体](README-CN.md)
 # Pretext
 
 Pure JavaScript/TypeScript library for multiline text measurement & layout. Fast, accurate & supports all the languages you didn't even know about. Allows rendering to DOM, Canvas, SVG and soon, server-side.
